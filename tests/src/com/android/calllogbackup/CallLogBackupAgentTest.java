@@ -16,6 +16,8 @@
 
 package com.android.calllogbackup;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.eq;
@@ -27,7 +29,6 @@ import android.app.backup.BackupDataOutput;
 import android.content.Context;
 import android.database.Cursor;
 import android.provider.CallLog;
-import android.test.AndroidTestCase;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
@@ -35,13 +36,13 @@ import androidx.test.filters.SmallTest;
 import com.android.calllogbackup.CallLogBackupAgent.Call;
 import com.android.calllogbackup.CallLogBackupAgent.CallLogBackupState;
 
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 import org.mockito.InOrder;
-import org.mockito.Matchers;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataInput;
@@ -59,7 +60,7 @@ import java.util.TreeSet;
  * Test cases for {@link com.android.providers.contacts.CallLogBackupAgent}
  */
 @SmallTest
-public class CallLogBackupAgentTest extends AndroidTestCase {
+public class CallLogBackupAgentTest {
     static final String TELEPHONY_COMPONENT
             = "com.android.phone/com.android.services.telephony.TelephonyConnectionService";
     static final String TEST_PHONE_ACCOUNT_HANDLE_SUB_ID = "666";
@@ -74,7 +75,9 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
     @Mock BackupDataOutput mBackupDataOutput;
     @Mock Cursor mCursor;
 
-    private CallLogBackupAgent.BackupRestoreEventLoggerProxy mBackupRestoreEventLoggerProxy =
+    private Context mContext;
+
+    private final CallLogBackupAgent.BackupRestoreEventLoggerProxy mBackupRestoreEventLoggerProxy =
             new CallLogBackupAgent.BackupRestoreEventLoggerProxy() {
         @Override
         public void logItemsBackedUp(String dataType, int count) {
@@ -101,30 +104,27 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
 
     MockitoHelper mMockitoHelper = new MockitoHelper();
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
-
         mMockitoHelper.setUp(getClass());
+
+        mContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+
         // Since we're testing a system app, AppDataDirGuesser doesn't find our
         // cache dir, so set it explicitly.
-        System.setProperty("dexmaker.dexcache", getContext().getCacheDir().toString());
-        MockitoAnnotations.initMocks(this);
+        System.setProperty("dexmaker.dexcache", mContext.getCacheDir().toString());
 
+        MockitoAnnotations.initMocks(this);
         mCallLogBackupAgent = new CallLogBackupAgent();
         mCallLogBackupAgent.setBackupRestoreEventLoggerProxy(mBackupRestoreEventLoggerProxy);
     }
 
-    @Override
+    @After
     public void tearDown() throws Exception {
         mMockitoHelper.tearDown();
     }
 
-    @Override
-    public Context getTestContext() {
-        return InstrumentationRegistry.getContext();
-    }
-
+    @Test
     public void testReadState_NoCall() throws Exception {
         when(mDataInput.readInt()).thenThrow(new EOFException());
 
@@ -134,6 +134,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertEquals(state.callIds.size(), 0);
     }
 
+    @Test
     public void testReadState_OneCall() throws Exception {
         when(mDataInput.readInt()).thenReturn(
                 1 /* version */,
@@ -151,6 +152,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
      * Verifies that attempting to restore from a version newer than what the backup agent defines
      * will result in no restored rows.
      */
+    @Test
     public void testRestoreFromHigherVersion() throws Exception {
         // The backup format is not well structured, and consists of a bunch of persisted bytes, so
         // making the mock data is a bit gross.
@@ -162,13 +164,10 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         byte[] data = byteArrayOutputStream.toByteArray();
         when(backupDataInput.getDataSize()).thenReturn(data.length);
         when(backupDataInput.readEntityData(any(), anyInt(), anyInt())).thenAnswer(
-                new Answer<Object>() {
-                    @Override
-                    public Object answer(InvocationOnMock invocation) throws Throwable {
-                        byte[] bytes = invocation.getArgument(0);
-                        System.arraycopy(data, 0, bytes, 0, data.length);
-                        return null;
-                    }
+                invocation -> {
+                    byte[] bytes = invocation.getArgument(0);
+                    System.arraycopy(data, 0, bytes, 0, data.length);
+                    return null;
                 }
         );
 
@@ -177,12 +176,9 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         // number of items to restore.
         final int[] executionLimit = {1};
         when(backupDataInput.readNextHeader()).thenAnswer(
-                new Answer<Object>() {
-                    @Override
-                    public Object answer(InvocationOnMock invocation) throws Throwable {
-                        executionLimit[0]--;
-                        return executionLimit[0] >= 0;
-                    }
+                invocation -> {
+                    executionLimit[0]--;
+                    return executionLimit[0] >= 0;
                 }
         );
 
@@ -192,6 +188,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertEquals(0, backupRestoreLoggerSuccessCount);
     }
 
+    @Test
     public void testReadState_MultipleCalls() throws Exception {
         when(mDataInput.readInt()).thenReturn(
                 1 /* version */,
@@ -207,6 +204,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertTrue(state.callIds.contains(102));
     }
 
+    @Test
     public void testWriteState_NoCalls() throws Exception {
         CallLogBackupState state = new CallLogBackupState();
         state.version = CallLogBackupAgent.VERSION;
@@ -219,6 +217,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         inOrder.verify(mDataOutput).writeInt(0 /* size */);
     }
 
+    @Test
     public void testWriteState_OneCall() throws Exception {
         CallLogBackupState state = new CallLogBackupState();
         state.version = CallLogBackupAgent.VERSION;
@@ -233,6 +232,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         inOrder.verify(mDataOutput).writeInt(101 /* call-ID */);
     }
 
+    @Test
     public void testWriteState_MultipleCalls() throws Exception {
         CallLogBackupState state = new CallLogBackupState();
         state.version = CallLogBackupAgent.VERSION;
@@ -251,7 +251,8 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         inOrder.verify(mDataOutput).writeInt(103 /* call-ID */);
     }
 
-    public void testRunBackup_NoCalls() throws Exception {
+    @Test
+    public void testRunBackup_NoCalls() {
         CallLogBackupState state = new CallLogBackupState();
         state.version = CallLogBackupAgent.VERSION;
         state.callIds = new TreeSet<>();
@@ -266,6 +267,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         Mockito.verifyNoMoreInteractions(mBackupDataOutput);
     }
 
+    @Test
     public void testRunBackup_OneNewCall_ErrorAddingCall() throws Exception {
         CallLogBackupState state = new CallLogBackupState();
         state.version = CallLogBackupAgent.VERSION;
@@ -283,7 +285,8 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertEquals(backupRestoreLoggerFailCount, 1);
     }
 
-    public void testRunBackup_OneNewCall_NullBackupDataOutput() throws Exception {
+    @Test
+    public void testRunBackup_OneNewCall_NullBackupDataOutput() {
         CallLogBackupState state = new CallLogBackupState();
         state.version = CallLogBackupAgent.VERSION;
         state.callIds = new TreeSet<>();
@@ -298,6 +301,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertEquals(backupRestoreLoggerFailCount, 1);
     }
 
+    @Test
     public void testRunBackup_OneNewCall() throws Exception {
         CallLogBackupState state = new CallLogBackupState();
         state.version = CallLogBackupAgent.VERSION;
@@ -310,14 +314,15 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertEquals(backupRestoreLoggerSuccessCount, 1);
         assertEquals(backupRestoreLoggerFailCount, 0);
 
-        verify(mBackupDataOutput).writeEntityHeader(eq("101"), Matchers.anyInt());
-        verify(mBackupDataOutput).writeEntityData((byte[]) Matchers.any(), Matchers.anyInt());
+        verify(mBackupDataOutput).writeEntityHeader(eq("101"), anyInt());
+        verify(mBackupDataOutput).writeEntityData(any(byte[].class), anyInt());
     }
 
     /*
         Test PhoneAccountHandle Migration process during back up
      */
-    public void testReadCallFromCursorForPhoneAccountMigrationBackup() throws Exception {
+    @Test
+    public void testReadCallFromCursorForPhoneAccountMigrationBackup() {
         Map<Integer, String> subscriptionInfoMap = new HashMap<>();
         subscriptionInfoMap.put(TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT,
                 TEST_PHONE_ACCOUNT_HANDLE_ICC_ID);
@@ -338,43 +343,52 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertEquals(0, call.isPhoneAccountMigrationPending);
     }
 
-    public void testReadCallFromCursor_WithNullAccountComponentName() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullAccountComponentName() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.PHONE_ACCOUNT_COMPONENT_NAME);
     }
 
-    public void testReadCallFromCursor_WithNullNumber() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullNumber() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.NUMBER);
     }
 
-    public void testReadCallFromCursor_WithNullPostDialDigits() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullPostDialDigits() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.POST_DIAL_DIGITS);
     }
 
-    public void testReadCallFromCursor_WithNullViaNumber() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullViaNumber() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.VIA_NUMBER);
     }
 
-    public void testReadCallFromCursor_WithNullPhoneAccountId() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullPhoneAccountId() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.PHONE_ACCOUNT_ID);
     }
 
-    public void testReadCallFromCursor_WithNullCallAccountAddress() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullCallAccountAddress() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.PHONE_ACCOUNT_ADDRESS);
     }
 
-    public void testReadCallFromCursor_WithNullCallScreeningAppName() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullCallScreeningAppName() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.CALL_SCREENING_APP_NAME);
     }
 
-    public void testReadCallFromCursor_WithNullCallScreeningComponentName() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullCallScreeningComponentName() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.CALL_SCREENING_COMPONENT_NAME);
     }
 
-    public void testReadCallFromCursor_WithNullMissedReason() throws Exception {
+    @Test
+    public void testReadCallFromCursor_WithNullMissedReason() {
         testReadCallFromCursor_WithNullField(CallLog.Calls.MISSED_REASON);
     }
 
-    private void testReadCallFromCursor_WithNullField(String field) throws Exception {
+    private void testReadCallFromCursor_WithNullField(String field) {
         Map<Integer, String> subscriptionInfoMap = new HashMap<>();
         subscriptionInfoMap.put(TEST_PHONE_ACCOUNT_HANDLE_SUB_ID_INT,
             TEST_PHONE_ACCOUNT_HANDLE_ICC_ID);
@@ -385,6 +399,7 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         Call call = mCallLogBackupAgent.readCallFromCursor(mCursor);
     }
 
+    @Test
     public void testRunBackup_MultipleCall() throws Exception {
         CallLogBackupState state = new CallLogBackupState();
         state.version = CallLogBackupAgent.VERSION;
@@ -400,14 +415,15 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertEquals(backupRestoreLoggerFailCount, 0);
 
         InOrder inOrder = Mockito.inOrder(mBackupDataOutput);
-        inOrder.verify(mBackupDataOutput).writeEntityHeader(eq("101"), Matchers.anyInt());
+        inOrder.verify(mBackupDataOutput).writeEntityHeader(eq("101"), anyInt());
         inOrder.verify(mBackupDataOutput).
-                writeEntityData((byte[]) Matchers.any(), Matchers.anyInt());
-        inOrder.verify(mBackupDataOutput).writeEntityHeader(eq("102"), Matchers.anyInt());
+                writeEntityData(any(byte[].class), anyInt());
+        inOrder.verify(mBackupDataOutput).writeEntityHeader(eq("102"), anyInt());
         inOrder.verify(mBackupDataOutput).
-                writeEntityData((byte[]) Matchers.any(), Matchers.anyInt());
+                writeEntityData(any(byte[].class), anyInt());
     }
 
+    @Test
     public void testRunBackup_PartialMultipleCall() throws Exception {
         CallLogBackupState state = new CallLogBackupState();
 
@@ -426,9 +442,9 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         assertEquals(backupRestoreLoggerFailCount, 0);
 
         InOrder inOrder = Mockito.inOrder(mBackupDataOutput);
-        inOrder.verify(mBackupDataOutput).writeEntityHeader(eq("102"), Matchers.anyInt());
+        inOrder.verify(mBackupDataOutput).writeEntityHeader(eq("102"), anyInt());
         inOrder.verify(mBackupDataOutput).
-                writeEntityData((byte[]) Matchers.any(), Matchers.anyInt());
+                writeEntityData(any(byte[].class), anyInt());
     }
 
     private static void mockCursor(Cursor cursor, boolean isTelephonyComponentName) {
@@ -743,5 +759,4 @@ public class CallLogBackupAgentTest extends AndroidTestCase {
         c.accountId = "account-id";
         return c;
     }
-
 }
