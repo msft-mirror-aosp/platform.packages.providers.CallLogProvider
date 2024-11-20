@@ -16,6 +16,7 @@
 
 package com.android.calllogbackup;
 
+import static com.android.calllogbackup.CallLogBackupAgent.SELECTION_CALL_DATE_AND_NUMBER;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -26,8 +27,15 @@ import static org.mockito.Mockito.when;
 
 import android.app.backup.BackupDataInput;
 import android.app.backup.BackupDataOutput;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import com.google.common.collect.ImmutableList;
+import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.provider.CallLog;
 
 import androidx.test.InstrumentationRegistry;
@@ -35,10 +43,12 @@ import androidx.test.filters.SmallTest;
 
 import com.android.calllogbackup.CallLogBackupAgent.Call;
 import com.android.calllogbackup.CallLogBackupAgent.CallLogBackupState;
+import com.android.calllogbackup.Flags;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.Rule;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -54,6 +64,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeSet;
 
 /**
@@ -103,6 +114,11 @@ public class CallLogBackupAgentTest {
     CallLogBackupAgent mCallLogBackupAgent;
 
     MockitoHelper mMockitoHelper = new MockitoHelper();
+
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule =
+            DeviceFlagsValueProvider.createCheckFlagsRule();
+
 
     @Before
     public void setUp() throws Exception {
@@ -447,6 +463,142 @@ public class CallLogBackupAgentTest {
                 writeEntityData(any(byte[].class), anyInt());
     }
 
+    @Test
+    @RequiresFlagsEnabled({Flags.FLAG_CALL_LOG_RESTORE_DEDUPLICATION_ENABLED})
+    public void testRestore_DuplicateEntry_FlagEnabled_Deduplicates() throws Exception {
+        FakeCallLogBackupAgent backupAgent = new FakeCallLogBackupAgent();
+        backupAgent.setBackupRestoreEventLoggerProxy(mBackupRestoreEventLoggerProxy);
+        backupAgent.attach(mContext);
+
+        // Get the initial count of call log entries
+        ContentResolver contentResolver = backupAgent.getContentResolver();
+        int initialCallLogCount = getCallLogCount(contentResolver);
+
+        // Add an existing entry using FakeCallLogBackupAgent.writeCallToProvider
+        // to simulate a call log that was already in the database.
+        Call existingCall = makeCall(100, 1122334455L, 30, "555-0000");
+        backupAgent.writeCallToProvider(existingCall);
+
+        //  Call log count after adding the existing entry
+        int callLogCountWithExistingEntry = initialCallLogCount + 1;
+
+        // Create a new mock call
+        Call call = makeCall(101, 1234567890L, 60, "555-4321");
+
+        try {
+            // Restore the same call data twice using different BackupDataInput objects
+            backupAgent.onRestore(mockBackupDataInputWithCall(call), /* appVersionCode */
+                    0, /* newState */ null);
+            backupAgent.onRestore(mockBackupDataInputWithCall(call), /* appVersionCode */
+                    0, /* newState */ null);
+
+            // Assert that only one new entry was added
+            assertEquals(callLogCountWithExistingEntry + 1, getCallLogCount(contentResolver));
+
+            // Assert that the entry matches the mock call
+            assertCallCount(contentResolver, call, 1);
+
+            // Assert that the existing entry remains in the database and is unaltered
+            assertCallCount(contentResolver, existingCall, 1);
+        } finally {
+            clearCallLogs(contentResolver, ImmutableList.of(existingCall, call));
+        }
+
+        // Assert that the final count is equal to the initial count
+        assertEquals(initialCallLogCount, getCallLogCount(contentResolver));
+    }
+
+    @Test
+    @RequiresFlagsDisabled({Flags.FLAG_CALL_LOG_RESTORE_DEDUPLICATION_ENABLED})
+    public void testRestore_DuplicateEntry_FlagDisabled_AddsDuplicateEntry() throws Exception {
+        FakeCallLogBackupAgent backupAgent = new FakeCallLogBackupAgent();
+        backupAgent.setBackupRestoreEventLoggerProxy(mBackupRestoreEventLoggerProxy);
+        backupAgent.attach(mContext);
+
+        // Get the initial count of call log entries
+        ContentResolver contentResolver = backupAgent.getContentResolver();
+        int initialCallLogCount = getCallLogCount(contentResolver);
+
+        // Add an existing entry using FakeCallLogBackupAgent.writeCallToProvider
+        // to simulate a call log that was already in the database.
+        Call existingCall = makeCall(100, 1122334455L, 30, "555-0000");
+        backupAgent.writeCallToProvider(existingCall);
+
+        //  Call log count after adding the existing entry
+        int callLogCountWithExistingEntry = initialCallLogCount + 1;
+
+        // Create a new mock call
+        Call call = makeCall(101, 1234567890L, 60, "555-4321");
+
+        try {
+            // Restore the same call data twice using different BackupDataInput objects
+            backupAgent.onRestore(mockBackupDataInputWithCall(call), /* appVersionCode */
+                    0, /* newState */ null);
+            backupAgent.onRestore(mockBackupDataInputWithCall(call), /* appVersionCode */
+                    0, /* newState */ null);
+
+            // Assert that two new entries were added
+            assertEquals(callLogCountWithExistingEntry + 2, getCallLogCount(contentResolver));
+
+            // Assert that two entries exist with the same data
+            assertCallCount(contentResolver, call, 2);
+
+            // Assert that the existing entry remains in the database and is unaltered
+            assertCallCount(contentResolver, existingCall, 1);
+        } finally {
+            clearCallLogs(contentResolver, ImmutableList.of(existingCall, call));
+        }
+
+        // Assert that the final count is equal to the initial count
+        assertEquals(initialCallLogCount, getCallLogCount(contentResolver));
+    }
+
+    @Test
+    public void testRestore_DifferentEntries_AddsEntries() throws Exception {
+        FakeCallLogBackupAgent backupAgent = new FakeCallLogBackupAgent();
+        backupAgent.setBackupRestoreEventLoggerProxy(mBackupRestoreEventLoggerProxy);
+        backupAgent.attach(mContext);
+
+        // Get the initial count of call log entries
+        ContentResolver contentResolver = backupAgent.getContentResolver();
+        int initialCallLogCount = getCallLogCount(contentResolver);
+
+        // Add an existing entry using FakeCallLogBackupAgent.writeCallToProvider
+        // to simulate a call log that was already in the database.
+        Call existingCall = makeCall(100, 1122334455L, 30, "555-0000");
+        backupAgent.writeCallToProvider(existingCall);
+
+        //  Call log count after adding the existing entry
+        int callLogCountWithExistingEntry = initialCallLogCount + 1;
+
+        // Create two new mock calls
+        Call call1 = makeCall(101, 1234567890L, 60, "555-4321");
+        Call call2 = makeCall(102, 9876543210L, 60, "555-1234");
+        BackupDataInput backupDataInput1 = mockBackupDataInputWithCall(call1);
+        BackupDataInput backupDataInput2 = mockBackupDataInputWithCall(call2);
+
+        try {
+            // Restore the calls
+            backupAgent.onRestore(backupDataInput1, /* appVersionCode */ 0, /* newState */ null);
+            backupAgent.onRestore(backupDataInput2, /* appVersionCode */ 0, /* newState */ null);
+
+            // Assert that two new entries were added
+            assertEquals(callLogCountWithExistingEntry + 2, getCallLogCount(contentResolver));
+
+            // Assert that both calls exist in the database
+            assertCallCount(contentResolver, call1, 1);
+            assertCallCount(contentResolver, call2, 1);
+
+            // Assert that the existing entry remains in the database and is unaltered
+            assertCallCount(contentResolver, existingCall, 1);
+        } finally {
+            clearCallLogs(contentResolver, ImmutableList.of(existingCall, call1, call2));
+        }
+
+        // Assert that the final count is equal to the initial count
+        assertEquals(initialCallLogCount, getCallLogCount(contentResolver));
+    }
+
     private static void mockCursor(Cursor cursor, boolean isTelephonyComponentName) {
         when(cursor.moveToNext()).thenReturn(true).thenReturn(false);
 
@@ -749,6 +901,56 @@ public class CallLogBackupAgentTest {
             CALL_IS_PHONE_ACCOUNT_MIGRATION_PENDING);
     }
 
+    /**
+     * Creates a mock {@link BackupDataInput} for simulating the restore of call log data.
+     */
+    private BackupDataInput mockBackupDataInputWithCall(Call call) throws Exception {
+        BackupDataInput backupDataInput = Mockito.mock(BackupDataInput.class);
+        when(backupDataInput.readNextHeader()).thenReturn(true).thenReturn(false);
+        when(backupDataInput.getKey()).thenReturn(String.valueOf(call.id));
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream data = new DataOutputStream(baos);
+        // Intentionally keeping the version low to avoid writing
+        // a lot of data not relevant to the deduplication logic.
+        data.writeInt(1); // Version 1
+        data.writeLong(call.date);
+        data.writeLong(call.duration);
+        writeString(data, call.number);
+        data.writeInt(call.type);
+        data.writeInt(call.numberPresentation);
+        writeString(data, call.accountComponentName);
+        writeString(data, call.accountId);
+        writeString(data, call.accountAddress);
+        data.writeLong(call.dataUsage == null ? 0 : call.dataUsage);
+        data.writeInt(call.features);
+        data.flush();
+
+
+        byte[] callData = baos.toByteArray();
+        when(backupDataInput.getDataSize()).thenReturn(callData.length);
+        when(backupDataInput.readEntityData(any(byte[].class), anyInt(), anyInt()))
+                .thenAnswer(invocation -> {
+                    byte[] buffer = invocation.getArgument(0);
+                    System.arraycopy(callData, 0, buffer, 0, callData.length);
+                    return null;
+                });
+
+        return backupDataInput;
+    }
+
+    /**
+     * Writes a String to a {@link DataOutputStream}, handling null values.
+     */
+    private void writeString(DataOutputStream data, String str) throws IOException {
+        if (str == null) {
+            data.writeBoolean(false);
+        } else {
+            data.writeBoolean(true);
+            data.writeUTF(str);
+        }
+    }
+
     private static Call makeCall(int id, long date, long duration, String number) {
         Call c = new Call();
         c.id = id;
@@ -758,5 +960,50 @@ public class CallLogBackupAgentTest {
         c.accountComponentName = "account-component";
         c.accountId = "account-id";
         return c;
+    }
+
+    private int getCallLogCount(ContentResolver contentResolver) {
+        try (Cursor cursor = contentResolver.query(CallLog.Calls.CONTENT_URI,
+                null, null, null, null)) {
+            return cursor != null ? cursor.getCount() : 0;
+        }
+    }
+
+    private void assertCallCount(ContentResolver contentResolver, Call call,
+            int expectedCount) {
+        String[] whereArgs = {String.valueOf(call.date), call.number};
+        try (Cursor cursor = contentResolver.query(CallLog.Calls.CONTENT_URI, /* projection */ null,
+                SELECTION_CALL_DATE_AND_NUMBER, whereArgs, /* sortOrder */ null)) {
+            assertEquals(expectedCount, Objects.requireNonNull(cursor).getCount());
+        }
+    }
+
+    /**
+     * Clears call logs that match the given list of {@link Call}s.
+     */
+    private void clearCallLogs(ContentResolver contentResolver, ImmutableList<Call> callsToClear) {
+        for (Call call : callsToClear) {
+            String[] whereArgs = {String.valueOf(call.date), call.number};
+            contentResolver.delete(CallLog.Calls.CONTENT_URI, SELECTION_CALL_DATE_AND_NUMBER,
+                    whereArgs);
+        }
+    }
+
+    /**
+     * A fake CallLogBackupAgent used for testing. This agent simplifies
+     * the insertion of call log entries for testing restore operations.
+     */
+    private static class FakeCallLogBackupAgent extends CallLogBackupAgent {
+        @Override
+        protected void writeCallToProvider(Call call) {
+            ContentValues values = new ContentValues();
+            values.put(CallLog.Calls.NUMBER, call.number);
+            values.put(CallLog.Calls.DATE, call.date);
+            values.put(CallLog.Calls.DURATION, call.duration);
+            values.put(CallLog.Calls.TYPE, call.type);
+
+            ContentResolver resolver = getContentResolver();
+            resolver.insert(CallLog.Calls.CONTENT_URI, values);
+        }
     }
 }
